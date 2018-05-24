@@ -26,7 +26,7 @@ m = 5
 l_robot = array([0.2, 0.2, 0.2])
 mu = 0.45
 # k:地面刚度数据，有待考证
-k = 4.7384 * 10 ** 4
+k = 4.7384*10**4
 recovery_co = 0.95
 # mu0:静摩擦系数
 mu0 = 0.48
@@ -39,9 +39,16 @@ vertex_b = array([[lx, lx, lx, lx, -lx, -lx, -lx, -lx],
                   [-lz, lz, lz, -lz, -lz, lz, lz, -lz]])
 MIN_ENERGY = 0.001
 MAX_VXY = 1.5
-MAX_VZ = 0.2
+MAX_VZ = 0.3
 # RK4算法参数
 STEP_LENGTH = 0.001
+
+
+def wheel_model(M, w):
+    flag = abs(w) >= 100
+    w[flag] = 0
+    M = minimum(0.1, maximum(-0.1, M))
+    return M, w
 
 
 # check: OK
@@ -73,8 +80,8 @@ def q_to_DCM(q):
 # 计算惯性系下的各角点参数
 def vertex(state):
     XYZc, v, q, w = state[0:3], state[3:6], state[6:10], state[10:13]
-    q /= sqrt(q.dot(q))
-    DCM = q_to_DCM(q)
+    q_norm = q / sqrt(q.dot(q))
+    DCM = q_to_DCM(q_norm)
     vertex_s = dot(DCM.T, vertex_b) + reshape(XYZc, [-1, 1])
     vertex_high = vertex_s[2, :]
     vertex_v = dot(DCM.T, dot(crossMatrix(w), vertex_b)) + reshape(v, [-1, 1])
@@ -83,36 +90,43 @@ def vertex(state):
 
 # check:OK
 # 动力学微分方程，flag标记是否发生碰撞，true为在碰撞，
-def dynamic(state, flag=ones([8]) < 0, v0=zeros(8)):
+def dynamic(state, v0=zeros(8)):
     XYZc, v, q, w, w_wheel = state[0:3], state[3:6], state[6:10], state[10:13], state[13:16]
     q /= sqrt(q.dot(q))
-    d_w_wheel = array([0, 0, 0])
+    M_wheel, w_wheel = wheel_model(array([0, 0, 0]), w_wheel)
+    d_w_wheel = UJ_inv.dot(M_wheel)
     F = zeros([3, 8])
     T = zeros([3, 8])
     DCM = q_to_DCM(q)
     vertex_s, vertex_high, vertex_v = vertex(state)
-    Teq = cross(w, I_star.dot(w) + U.dot(J_wheel).dot(w_wheel)) + array([0, 0, 0])
-    for i in range(0, 8):
-        if flag[i]:
-            r_one = vertex_b[:, i]
-            high = vertex_high[i]
-            normal_one = array([0, 0, 1])
+    normal = zeros([3, 8])
+    normal[2, :] = 1
+    vn = sum(vertex_v * normal, axis=0)
+    vt = vertex_v - vn * normal
+    Teq = cross(w, I_star.dot(w) + U.dot(J_wheel).dot(w_wheel)) + U.dot(J_wheel).dot(d_w_wheel)
+    for j in range(0, 8):
+        if vertex_high[j] < 0:
+            if v0[j] < 0.0001:
+                v0[j] = 0.0001
+
+            r_one = vertex_b[:, j]
+            high = vertex_high[j]
+            normal_one = normal[:, j]
             invade_s = -dot(array([0, 0, high]), normal_one)
             if invade_s < 0:
                 continue
-            vertex_v_one = vertex_v[:, i]
-            invade_v = -dot(vertex_v_one, normal_one)
-            vt = vertex_v_one - dot(vertex_v_one, normal_one) * normal_one
-            vt_value = sqrt(dot(vt, vt))
-            if abs(v0[i]) < 0.0001:
-                v0[i] = 0.0001 * sign(v0[i])
-            c = 0.75 * (1 - recovery_co ** 2) * k * (invade_s ** 1.5) / v0[i]
+            invade_v = -vn[j]
+            vt_one = vt[:, j]
+            vt_value = sqrt(dot(vt_one, vt_one))
+            if abs(v0[j]) < 0.00001:
+                v0[j] = 0.00001 * sign(v0[j])
+            c = 0.75 * (1 - recovery_co ** 2) * k * (invade_s ** 1.5) / v0[j]
             Fn_value = k * (invade_s ** 1.5) + c * invade_v
             # if Fn_value < 0:
-            #    Fn_value = 1e-8
+            #   Fn_value = Fn_value
             Fn = Fn_value * normal_one
-            if vt_value >= 0.0001:
-                Ft = -mu * Fn_value * vt / vt_value
+            if vt_value >= 0.0006:
+                Ft = -mu * Fn_value * vt_one / vt_value
             else:
                 # 具体方程及求解过程见 笔记
 
@@ -122,10 +136,12 @@ def dynamic(state, flag=ones([8]) < 0, v0=zeros(8)):
                 alpha = (Fn.dot(Fn) + A_inv.dot(b).dot(Fn)) / (A_inv.dot(Fn).dot(Fn))
                 Ft = -A_inv.dot(dot(A - alpha * eye(3), Fn) + b)
                 Ft_value = sqrt(Ft.dot(Ft))
-                if Ft_value >= mu0 * Fn_value:
-                    Ft = mu0 * Fn_value * Ft / Ft_value
-            F[:, i] = Ft + Fn
-            T[:, i] = cross(r_one, DCM.dot(Ft + Fn))
+                if Ft_value >= mu0 * abs(Fn_value):
+                    Ft = mu0 * abs(Fn_value) * Ft / Ft_value
+            F[:, j] = Ft + Fn
+            T[:, j] = cross(r_one, DCM.dot(Ft + Fn))
+        else:
+            v0[j] = -vn[j]
     F = sum(F, 1) + m * g
     T = sum(T, 1)
     M_star = T - Teq
@@ -134,22 +150,22 @@ def dynamic(state, flag=ones([8]) < 0, v0=zeros(8)):
     d_q = 0.5 * dot(mat_q(q), concatenate((zeros(1), w)))
     d_w = I_star_inv.dot(M_star)
     d_state = concatenate((d_XYZc, d_v, d_q, d_w, d_w_wheel))
-    return d_state
+    return d_state, v0
 
 
 # check:OK
-def RK4(t, state, step_length=STEP_LENGTH, flag=ones([8]) < 0, v0=zeros(8)):
+def RK4(t, state, step_length=STEP_LENGTH, v0=zeros(8)):
     h = step_length
-    k1 = dynamic(state, flag, v0)
-    k2 = dynamic(state + h * k1 / 2, flag, v0)
-    k3 = dynamic(state + h * k2 / 2, flag, v0)
-    k4 = dynamic(state + h * k3, flag, v0)
+    k1, v0 = dynamic(state, v0.copy())
+    k2, v0 = dynamic(state + h * k1 / 2, v0.copy())
+    k3, v0 = dynamic(state + h * k2 / 2, v0.copy())
+    k4, v0 = dynamic(state + h * k3, v0.copy())
     state += h * (k1 + 2 * k2 + 2 * k3 + k4) / 6
     state[6:10] /= linalg.norm(state[6:10])
     t += h
-    if state[3:13].dot(state[3:13]) >= 1000:
+    if state[3:13].dot(state[3:13]) >= 10000:
         raise Exception("Invalid State!")
-    return t, state
+    return t, state, v0
 
 
 class Env:
@@ -180,7 +196,7 @@ class Env:
         q /= linalg.norm(q)
         w = random.rand(3) * 2 - 1
         w_wheel = random.rand(3) * 2 - 1
-        zf = -min(dot(q_to_DCM(q).T, vertex_b)[2, ...]) + 0.0001
+        zf = -min(dot(q_to_DCM(q).T, vertex_b)[2, ...]) + 1e-8
 
         self.state = concatenate([XY, array([zf]), v_xy, array([vz]), q, w, w_wheel])
         self.t = 0
@@ -193,12 +209,13 @@ class Env:
     # 先按假想的无控进行仿真，若探测器在空中时间小于MIN_FLY_TIME,按无控进行仿真
     # ?探测器在空中角动量守恒，应该可以计算出与action对应的飞轮转速？
     def step(self, action):
+
         pre_t = self.t
         pre_state = self.state.copy()
-        v0 = zeros(8)
         vertex_s, vertex_high, vertex_v = vertex(self.state)
-        if (vertex_high <= 0).any():
-            raise Exception("Invalid pre_state!")
+        if (vertex_high < 0).any():
+            pass
+            # raise Exception("Invalid pre_state!")
         qf = action[0:4].copy()
         wf = action[4:7].copy()
         # 根据目标姿态求碰撞时间
@@ -215,7 +232,7 @@ class Env:
             # 按预定状态更新state到碰撞前
             self.t += t_fly
             self.state[0:2] += self.state[3:5] * t_fly
-            self.state[2] = zf + 0.000001  # 避免计算误差导致最低点位于地面以下,多加0.000001
+            self.state[2] = zf  # + 1e-8 # 避免计算误差导致最低点位于地面以下,多加0.000001
             self.state[5] = t_down * g[2]
             # q, w, w_wheel = self.state[6:10], self.state[10:13], self.state[13:16]
             w_wheel_target = random.rand(3) * 2 - 1
@@ -229,73 +246,40 @@ class Env:
                 controlled = False
             else:
                 controlled = True
-
-        self.flySim()
-        vertex_s, vertex_high, vertex_v = vertex(self.state)
-        # 至此，进入碰前状态，最低点刚刚越过地面
-        flag = vertex_high <= 0
-        if not flag.any():
-            raise Exception("Invalid pre_coll_state!")
-        v0[flag] = -vertex_v[2, flag]
-        action = self.state[6:13].copy()
-        pre_energy = self.energy()
-        self.collisionSim(flag, v0)
-        after_energy = self.energy()
-        loss_energy = pre_energy - after_energy
-        if loss_energy <= 0:
-            raise Exception("Energy improved!")
-        stop_bool = self.energy() < MIN_ENERGY
+                v0 = -vertex_v[2, :]
+                self.collisionSim(v0)
+        stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[3:6]) < 1e-3
         over_map = linalg.norm(self.state[0:2]) > (MAP_DIM * PIXEL_METER)
         over_speed = linalg.norm(self.state[3:5]) > MAX_VXY or linalg.norm(self.state[5]) > MAX_VZ
         done_bool = linalg.norm(self.state[0:2]) < DONE_R
-        reward_value = self.reward(done_bool, stop_bool, pre_state, pre_t, over_speed, over_map)
-        return self.observe_state(), reward_value, done_bool or stop_bool or over_map or over_speed, controlled, action
+        reward_value = self.reward(done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, controlled)
+        return self.observe_state(), reward_value, done_bool or stop_bool or over_map or over_speed or controlled
 
     def observe_state(self):
         o_s = self.state[0:6].copy()
-        o_s[0:2] /= (MAP_DIM*PIXEL_METER/2)
+        o_s[0:2] /= (MAP_DIM * PIXEL_METER / 2)
         return o_s
 
     # check:
     # 碰撞仿真，直至所有顶点均与地面脱离
     # 更新t,state
-    def collisionSim(self, flag, v0):
-        if not flag.any():
-            raise Exception("Invalid collisionSim!")
-        while flag.any():
-            self.t, self.state = RK4(self.t, self.state, STEP_LENGTH, flag, v0)
-            vertex_s, vertex_high, vertex_v = vertex(self.state)
-            slc1 = logical_and(flag, vertex_high > 0)
-            flag[slc1] = False
-            v0[slc1] = 0
-            slc2 = logical_and(logical_not(flag), vertex_high <= 0)
-            flag[slc2] = True
-            v0[slc2] = -vertex_v[2, slc2]
 
-    def flySim(self):
-        vertex_s, vertex_high, vertex_v = vertex(self.state)
-        if (vertex_high <= 0).any():
-            raise Exception("Invalid pre_sim_state!")
-        pre_t, pre_state = self.t, self.state.copy()
-        while (vertex_high > 0).all():
-            pre_t, pre_state = self.t, self.state.copy()
-            self.t, self.state = RK4(self.t, self.state, STEP_LENGTH * 100)
-            vertex_s, vertex_high, vertex_v = vertex(self.state)
-        self.t, self.state = pre_t, pre_state.copy()
-        vertex_s, vertex_high, vertex_v = vertex(self.state)
-        while (vertex_high > 0).all():
-            self.t, self.state = RK4(self.t, self.state, STEP_LENGTH)
-            vertex_s, vertex_high, vertex_v = vertex(self.state)
+    def collisionSim(self, v0):
+        while self.state[2] <= 0.2*sqrt(3) or self.state[5] <= 0:
+            self.t, self.state, v0 = RK4(self.t, self.state, STEP_LENGTH, v0)
+        return v0
 
-    def reward(self, done_bool, stop_bool, pre_state, pre_t, over_speed, over_map):
+    def reward(self, done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, controlled):
         def _cos_vec(a, b):
             f = dot(a, b) / (linalg.norm(a) * linalg.norm(b))
             return f
 
-        if done_bool:
+        if not controlled:
+            reward_value = -3
+        elif done_bool:
             reward_value = 10
         elif over_map:
-            reward_value = -3
+            reward_value = -2.5
         elif stop_bool:
             reward_value = (linalg.norm(self.state0[0:2]) - linalg.norm(self.state[0:2])) / \
                            max(linalg.norm(self.state0[0:2]), linalg.norm(self.state[0:2]))
@@ -307,7 +291,7 @@ class Env:
             c_pre = _cos_vec(-pre_state[0:2], pre_state[3:5])
             c = _cos_vec(-self.state[0:2], self.state[3:5])
             v_xy = linalg.norm(self.state[3:5])
-            reward_value = (c - c_pre) + (v_xy*c - v_xy*sqrt(1-c**2)) + d - 0.0001 * (self.t - pre_t)
+            reward_value = (c - c_pre) + (v_xy * c - v_xy * sqrt(1 - c ** 2)) + d - 0.0001 * (self.t - pre_t)
         return reward_value
 
     def energy(self):
@@ -318,6 +302,14 @@ class Env:
 
 if __name__ == '__main__':
     env = Env()
+    env.state = array([3.33423611e+02, -1.65905041e+02, 2.84824947e-01, 5.00737136e-03, -7.17127150e-02,
+                       -2.13685715e-01, 3.92365544e-01, -5.85075828e-02, 9.17433879e-01, 3.06793251e-02,
+                       1.21038266e-01, 7.79311340e-01, -1.38269211e+00, -5.84824898e-01, 7.97754177e-01,
+                       9.71948397e-03])
+    v00 = zeros(8)
+    v00 = env.collisionSim(v00)
+    print(v00)
+    print(env.state)
     for i in range(100):
         ep_reward = 0
         ave_w = 0
@@ -329,9 +321,14 @@ if __name__ == '__main__':
             act = random.rand(7) * env.a_bound * 2 - env.a_bound
             act[0:4] /= linalg.norm(act[0:4])
             ave_w += linalg.norm(act[4:7])
-            next_s, r, done, controlled, real_action = env.step(act)
+            next_s, r, done = env.step(act)
             ep_reward += r
             if done:
                 break
         print("episode: %10d   ep_reward:%10.5f   last_reward:%10.5f  ave_w:%10.5f" % (i, ep_reward, r, ave_w/(step+1)))
 
+    env = Env()
+    act = array([0.64, 0.48, 0.36, 0.48, -0.6, -0.25, 0.85])
+    act *= env.a_bound
+    s_, r, done = env.step(act)
+    print(s_, r, done)
