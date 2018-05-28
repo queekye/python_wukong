@@ -141,12 +141,8 @@ for i in range(MAX_EPISODES):
         a[:a_dim[0]] /= max(np.linalg.norm(a[:a_dim[0]]), 1e-8)
         a = np.minimum(a_bound, np.maximum(-a_bound, a))
 
-        s_, r, done, controlled, real_a = env.step(a)
-        if not controlled:
-            # agent.perceive(state_input, action, -1, next_state, True)
-            ddpg.store_transition(s, real_a, r, s_)
-        else:
-            ddpg.store_transition(s, a, r, s_)
+        s_, r, done= env.step(a)
+        ddpg.store_transition(s, a, r, s_)
         replay_num += 1
         if ddpg.pointer > REPLAY_START:
             ddpg.learn()

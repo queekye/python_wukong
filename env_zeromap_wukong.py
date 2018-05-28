@@ -12,7 +12,6 @@ from numpy import *
 # 地图参数
 MAP_DIM = 64
 PIXEL_METER = 16
-DONE_R = 20
 
 # 小行星与探测器的相关参数
 M_wheel_max = 0.01
@@ -26,7 +25,7 @@ m = 5
 l_robot = array([0.2, 0.2, 0.2])
 mu = 0.45
 # k:地面刚度数据，有待考证
-k = 4.7384*10**4
+k = 4.7384 * 10 ** 4
 recovery_co = 0.95
 # mu0:静摩擦系数
 mu0 = 0.48
@@ -156,15 +155,25 @@ def dynamic(state, v0=zeros(8)):
 # check:OK
 def RK4(t, state, step_length=STEP_LENGTH, v0=zeros(8)):
     h = step_length
-    k1, v0 = dynamic(state, v0.copy())
-    k2, v0 = dynamic(state + h * k1 / 2, v0.copy())
-    k3, v0 = dynamic(state + h * k2 / 2, v0.copy())
-    k4, v0 = dynamic(state + h * k3, v0.copy())
+    k1, v1 = dynamic(state.copy(), v0.copy())
+    k2, v2 = dynamic(state.copy() + h * k1 / 2, v1.copy())
+    k3, v3 = dynamic(state.copy() + h * k2 / 2, v2.copy())
+    k4, v4 = dynamic(state.copy() + h * k3, v3.copy())
     state += h * (k1 + 2 * k2 + 2 * k3 + k4) / 6
     state[6:10] /= linalg.norm(state[6:10])
     t += h
     if state[3:13].dot(state[3:13]) >= 10000:
-        raise Exception("Invalid State!")
+        print("Invalid State!")
+    return t, state, v0
+
+
+# check:OK
+def Euler(t, state, step_length, v0):
+    h = step_length
+    k1, v0 = dynamic(state, v0.copy())
+    state += h * k1
+    state[6:10] /= linalg.norm(state[6:10])
+    t += h
     return t, state, v0
 
 
@@ -177,6 +186,10 @@ class Env:
         self.t = 0
         self.state = array([0, 0, 3, 0.12, -0.08, 0, 1, 0, 0, 0, 0.2, -0.1, 0.15, -1.9, 1.5, -1.2])
         self.state0 = array([0, 0, 3, 0.12, -0.08, 0, 1, 0, 0, 0, 0.2, -0.1, 0.15, -1.9, 1.5, -1.2])
+        self.r_obj = 20
+
+    def cut_r_obj(self):
+        self.r_obj /= 2
 
     # check:
     # 设定初始状态，即探测器与地面的撞前状态
@@ -191,12 +204,15 @@ class Env:
         XY = ((maxXY - minXY) * random.random() + minXY) * array([cos(XY_theta), sin(XY_theta)])
         v_theta = random.random() * 2 * pi
         v_xy = ((maxVxy - minVxy) * random.random() + minVxy) * array([cos(v_theta), sin(v_theta)])
-        vz = 0.07 * random.random() + 0.03
+        vz = -0.07 * random.random() - 0.03
         q = random.rand(4)
         q /= linalg.norm(q)
         w = random.rand(3) * 2 - 1
         w_wheel = random.rand(3) * 2 - 1
-        zf = -min(dot(q_to_DCM(q).T, vertex_b)[2, ...]) + 1e-8
+
+        DCM = q_to_DCM(q)
+        s_dot = dot(DCM.T, vertex_b)
+        zf = -min(s_dot[2, :])
 
         self.state = concatenate([XY, array([zf]), v_xy, array([vz]), q, w, w_wheel])
         self.t = 0
@@ -209,51 +225,31 @@ class Env:
     # 先按假想的无控进行仿真，若探测器在空中时间小于MIN_FLY_TIME,按无控进行仿真
     # ?探测器在空中角动量守恒，应该可以计算出与action对应的飞轮转速？
     def step(self, action):
-
+        overtime = False
         pre_t = self.t
         pre_state = self.state.copy()
-        vertex_s, vertex_high, vertex_v = vertex(self.state)
-        if (vertex_high < 0).any():
-            pass
-            # raise Exception("Invalid pre_state!")
-        qf = action[0:4].copy()
-        wf = action[4:7].copy()
-        # 根据目标姿态求碰撞时间
-        zf = -min(dot(q_to_DCM(qf).T, vertex_b)[2, ...])
-        t_up = self.state[5] / -g[2]
-        z_max = self.state[2] + 0.5 * g[2] * t_up * 2 + self.state[5] * t_up
-        if zf >= z_max:
-            # 无法到达目标姿态，直接进行无控仿真
-            controlled = False
-        else:
-            # 计算空中飞行时间t_fly
-            t_down = sqrt(2 * (zf - z_max) / g[2])
-            t_fly = t_down + t_up
-            # 按预定状态更新state到碰撞前
-            self.t += t_fly
-            self.state[0:2] += self.state[3:5] * t_fly
-            self.state[2] = zf  # + 1e-8 # 避免计算误差导致最低点位于地面以下,多加0.000001
-            self.state[5] = t_down * g[2]
-            # q, w, w_wheel = self.state[6:10], self.state[10:13], self.state[13:16]
-            w_wheel_target = random.rand(3) * 2 - 1
-            # UJ_inv.dot(q_to_DCM(qf).dot(q_to_DCM(q).T).dot(dot(I_star, w)+U.dot(J_wheel).dot(w_wheel))-I_star.dot(wf))
-            self.state[6:10], self.state[10:13], self.state[13:16] = qf, wf, w_wheel_target
 
-            vertex_s, vertex_high, vertex_v = vertex(self.state)
-            index = argmin(vertex_high)
-            if vertex_v[2, index] > 0:
-                # 最低点速度向上，导致最低点不是碰撞点，碰撞姿态会有很大不同
-                controlled = False
-            else:
-                controlled = True
-                v0 = -vertex_v[2, :]
-                self.collisionSim(v0)
-        stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[3:6]) < 1e-3
+        validated = self.validate(action)
+        if validated:
+            v0 = self.relocation(action)
+            pre_energy = self.energy()
+            overtime = self.collisionSim(v0)
+            after_energy = self.energy()
+            loss_energy = after_energy - pre_energy
+            if loss_energy > 0:
+                print("energy improved", loss_energy)
+            if not overtime:
+                t_fly = -self.state[5] / g[2]
+                self.state[0:2] += self.state[3:5] * t_fly
+                self.state[5] = -self.state[5]
+
+        stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[3:5]) < 1e-2 or abs(self.state[5]) < 1e-2
         over_map = linalg.norm(self.state[0:2]) > (MAP_DIM * PIXEL_METER)
         over_speed = linalg.norm(self.state[3:5]) > MAX_VXY or linalg.norm(self.state[5]) > MAX_VZ
-        done_bool = linalg.norm(self.state[0:2]) < DONE_R
-        reward_value = self.reward(done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, controlled)
-        return self.observe_state(), reward_value, done_bool or stop_bool or over_map or over_speed or controlled
+        successed = linalg.norm(self.state[0:2]) < self.r_obj
+        reward_value = self.reward(successed, stop_bool, pre_state, pre_t, over_speed, over_map, validated, overtime)
+        done = successed or stop_bool or over_map or over_speed or overtime or (not validated)
+        return self.observe_state(), reward_value, done
 
     def observe_state(self):
         o_s = self.state[0:6].copy()
@@ -264,23 +260,62 @@ class Env:
     # 碰撞仿真，直至所有顶点均与地面脱离
     # 更新t,state
 
+    def validate(self, action):
+        validated = True
+        q, w = action[0:4].copy(), action[4:7].copy()
+        v = self.state[3:6].copy()
+        q_norm = q / sqrt(q.dot(q))
+        DCM = q_to_DCM(q_norm)
+        vertex_v = dot(DCM.T, dot(crossMatrix(w), vertex_b)) + reshape(v, [-1, 1])
+        rdot = dot(DCM.T, vertex_b)[2, :]
+        index = argmin(rdot)
+        if vertex_v[2, index] > 0:
+            # 最低点速度向上，导致最低点不是碰撞点，碰撞姿态会有很大不同
+            validated = False
+        return validated
+
     def collisionSim(self, v0):
-        while self.state[2] <= 0.2*sqrt(3) or self.state[5] <= 0:
-            self.t, self.state, v0 = RK4(self.t, self.state, STEP_LENGTH, v0)
+        t0 = self.t
+        overtime = False
+        while (self.state[2] <= 0.2 * sqrt(3) or self.state[5] <= 0) and self.t - t0 < 5:
+            self.t, self.state, v0 = Euler(self.t, self.state, STEP_LENGTH, v0)
+
+        if self.t - t0 >= 10:
+            overtime = True
+        return overtime
+
+    def relocation(self, action):
+        t_d1 = self.state[5] / g[2]
+        self.t -= t_d1
+        self.state[2] -= 0.5 * g[2] * t_d1 ** 2
+        self.state[0:2] -= t_d1 * self.state[3:5]
+
+        qf, wf = action[0:4].copy(), action[4:7].copy()
+        zf = -min(dot(q_to_DCM(qf).T, vertex_b)[2, ...])
+        t_d2 = sqrt(2 * (zf - self.state[2]) / g[2])
+
+        self.t += t_d2
+        self.state[0:2] += self.state[3:5] * t_d2
+        self.state[2] = zf
+        self.state[5] = t_d2 * g[2]
+        self.state[6:13] = action.copy()
+        self.state[13:16] = random.rand(3) * 2 - 1
+        vertex_v = dot(q_to_DCM(qf).T, dot(crossMatrix(wf), vertex_b)) + reshape(self.state[3:6].copy(), [-1, 1])
+        v0 = -vertex_v[2, :]
         return v0
 
-    def reward(self, done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, controlled):
+    def reward(self, successed, stop_bool, pre_state, pre_t, over_speed, over_map, validated, overtime):
         def _cos_vec(a, b):
             f = dot(a, b) / (linalg.norm(a) * linalg.norm(b))
             return f
 
-        if not controlled:
+        if not validated:
             reward_value = -3
-        elif done_bool:
+        elif successed:
             reward_value = 10
         elif over_map:
             reward_value = -2.5
-        elif stop_bool:
+        elif stop_bool or overtime:
             reward_value = (linalg.norm(self.state0[0:2]) - linalg.norm(self.state[0:2])) / \
                            max(linalg.norm(self.state0[0:2]), linalg.norm(self.state[0:2]))
         elif over_speed:
@@ -306,7 +341,8 @@ if __name__ == '__main__':
                        -2.13685715e-01, 3.92365544e-01, -5.85075828e-02, 9.17433879e-01, 3.06793251e-02,
                        1.21038266e-01, 7.79311340e-01, -1.38269211e+00, -5.84824898e-01, 7.97754177e-01,
                        9.71948397e-03])
-    v00 = zeros(8)
+    vertex_s, vertex_high, vertex_v = vertex(env.state)
+    v00 = -vertex_v[2, :]
     v00 = env.collisionSim(v00)
     print(v00)
     print(env.state)
@@ -320,15 +356,17 @@ if __name__ == '__main__':
         for step in range(200):
             act = random.rand(7) * env.a_bound * 2 - env.a_bound
             act[0:4] /= linalg.norm(act[0:4])
+            act[4:7] /= 10
             ave_w += linalg.norm(act[4:7])
-            next_s, r, done = env.step(act)
+            next_s, r, d = env.step(act)
             ep_reward += r
-            if done:
+            if d:
                 break
-        print("episode: %10d   ep_reward:%10.5f   last_reward:%10.5f  ave_w:%10.5f" % (i, ep_reward, r, ave_w/(step+1)))
+        print("episode: %10d   step_num:%10d    ep_reward:%10.5f   last_reward:%10.5f  ave_w:%10.5f"
+              % (i, step + 1, ep_reward, r, ave_w / (step + 1)))
 
     env = Env()
     act = array([0.64, 0.48, 0.36, 0.48, -0.6, -0.25, 0.85])
     act *= env.a_bound
-    s_, r, done = env.step(act)
-    print(s_, r, done)
+    s_, r, d = env.step(act)
+    print(s_, r, d)
