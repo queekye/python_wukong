@@ -79,7 +79,7 @@ def q_to_DCM(q):
 # 计算惯性系下的各角点参数
 def vertex(state):
     XYZc, v, q, w = state[0:3], state[3:6], state[6:10], state[10:13]
-    q_norm = q / sqrt(q.dot(q))
+    q_norm = q / max(array([sqrt(q.dot(q)), 1e-8]))
     DCM = q_to_DCM(q_norm)
     vertex_s = dot(DCM.T, vertex_b) + reshape(XYZc, [-1, 1])
     vertex_high = vertex_s[2, :]
@@ -91,7 +91,7 @@ def vertex(state):
 # 动力学微分方程，flag标记是否发生碰撞，true为在碰撞，
 def dynamic(state, v0=zeros(8)):
     XYZc, v, q, w, w_wheel = state[0:3], state[3:6], state[6:10], state[10:13], state[13:16]
-    q /= sqrt(q.dot(q))
+    q /= max(array([sqrt(q.dot(q)), 1e-8]))
     M_wheel, w_wheel = wheel_model(array([0, 0, 0]), w_wheel)
     d_w_wheel = UJ_inv.dot(M_wheel)
     F = zeros([3, 8])
@@ -100,29 +100,24 @@ def dynamic(state, v0=zeros(8)):
     vertex_s, vertex_high, vertex_v = vertex(state)
     normal = zeros([3, 8])
     normal[2, :] = 1
-    vn = sum(vertex_v * normal, axis=0)
-    vt = vertex_v - vn * normal
-    Teq = cross(w, I_star.dot(w) + U.dot(J_wheel).dot(w_wheel)) + U.dot(J_wheel).dot(d_w_wheel)
+    vn = vertex_v[2, :]
+    vt = vertex_v.copy()
+    vt[2, :] = 0
+    Teq = cross(w, I_star.dot(w) + U.dot(J_wheel).dot(w_wheel))
     for j in range(0, 8):
         if vertex_high[j] < 0:
-            if v0[j] < 0.0001:
-                v0[j] = 0.0001
+            if v0[j] < 0.1:
+                v0[j] = 0.1
 
             r_one = vertex_b[:, j]
             high = vertex_high[j]
-            normal_one = normal[:, j]
-            invade_s = -dot(array([0, 0, high]), normal_one)
-            if invade_s < 0:
-                continue
+            normal_one = array([0, 0, 1])
+            invade_s = -high
             invade_v = -vn[j]
             vt_one = vt[:, j]
             vt_value = sqrt(dot(vt_one, vt_one))
-            if abs(v0[j]) < 0.00001:
-                v0[j] = 0.00001 * sign(v0[j])
             c = 0.75 * (1 - recovery_co ** 2) * k * (invade_s ** 1.5) / v0[j]
             Fn_value = k * (invade_s ** 1.5) + c * invade_v
-            # if Fn_value < 0:
-            #   Fn_value = Fn_value
             Fn = Fn_value * normal_one
             if vt_value >= 0.0006:
                 Ft = -mu * Fn_value * vt_one / vt_value
@@ -136,7 +131,8 @@ def dynamic(state, v0=zeros(8)):
                 Ft = -A_inv.dot(dot(A - alpha * eye(3), Fn) + b)
                 Ft_value = sqrt(Ft.dot(Ft))
                 if Ft_value >= mu0 * abs(Fn_value):
-                    Ft = mu0 * abs(Fn_value) * Ft / Ft_value
+                    Ft = mu0 * abs(Fn_value) * vt_one / vt_value
+                Ft[2] = 0
             F[:, j] = Ft + Fn
             T[:, j] = cross(r_one, DCM.dot(Ft + Fn))
         else:
@@ -160,7 +156,7 @@ def RK4(t, state, step_length=STEP_LENGTH, v0=zeros(8)):
     k3, v3 = dynamic(state.copy() + h * k2 / 2, v2.copy())
     k4, v4 = dynamic(state.copy() + h * k3, v3.copy())
     state += h * (k1 + 2 * k2 + 2 * k3 + k4) / 6
-    state[6:10] /= linalg.norm(state[6:10])
+    state[6:10] /= max(array([linalg.norm(state[6:10]), 1e-8]))
     t += h
     if state[3:13].dot(state[3:13]) >= 10000:
         print("Invalid State!")
@@ -206,7 +202,7 @@ class Env:
         v_xy = ((maxVxy - minVxy) * random.random() + minVxy) * array([cos(v_theta), sin(v_theta)])
         vz = -0.07 * random.random() - 0.03
         q = random.rand(4)
-        q /= linalg.norm(q)
+        q /= max(array([sqrt(q.dot(q)), 1e-8]))
         w = random.rand(3) * 2 - 1
         w_wheel = random.rand(3) * 2 - 1
 
@@ -261,37 +257,34 @@ class Env:
     # 更新t,state
 
     def validate(self, action):
-        validated = True
         q, w = action[0:4].copy(), action[4:7].copy()
         v = self.state[3:6].copy()
-        q_norm = q / sqrt(q.dot(q))
+        q_norm = q / max(array([sqrt(q.dot(q)), 1e-8]))
         DCM = q_to_DCM(q_norm)
         vertex_v = dot(DCM.T, dot(crossMatrix(w), vertex_b)) + reshape(v, [-1, 1])
         rdot = dot(DCM.T, vertex_b)[2, :]
         index = argmin(rdot)
-        if vertex_v[2, index] > 0:
-            # 最低点速度向上，导致最低点不是碰撞点，碰撞姿态会有很大不同
-            validated = False
+        validated = vertex_v[2, index] < 0
+        # 最低点速度向上，导致最低点不是碰撞点，碰撞姿态会有很大不同
         return validated
 
     def collisionSim(self, v0):
         t0 = self.t
-        overtime = False
-        while (self.state[2] <= 0.2 * sqrt(3) or self.state[5] <= 0) and self.t - t0 < 5:
-            self.t, self.state, v0 = Euler(self.t, self.state, STEP_LENGTH, v0)
-
-        if self.t - t0 >= 10:
-            overtime = True
+        t_max = 20
+        while (self.state[2] <= 0.2 * sqrt(3) or self.state[5] <= 0) and self.t - t0 < t_max:
+            self.t, self.state, v0 = RK4(self.t, self.state, STEP_LENGTH*10, v0)
+        overtime = self.t - t0 >= t_max
         return overtime
 
     def relocation(self, action):
-        t_d1 = self.state[5] / g[2]
+        t_d1 = abs(self.state[5] / g[2])
         self.t -= t_d1
-        self.state[2] -= 0.5 * g[2] * t_d1 ** 2
+        self.state[2] += abs(0.5 * g[2] * t_d1 ** 2)
         self.state[0:2] -= t_d1 * self.state[3:5]
+        self.state[5] = 0
 
         qf, wf = action[0:4].copy(), action[4:7].copy()
-        zf = -min(dot(q_to_DCM(qf).T, vertex_b)[2, ...])
+        zf = -min(dot(q_to_DCM(qf).T, vertex_b)[2, :])
         t_d2 = sqrt(2 * (zf - self.state[2]) / g[2])
 
         self.t += t_d2
@@ -306,7 +299,7 @@ class Env:
 
     def reward(self, successed, stop_bool, pre_state, pre_t, over_speed, over_map, validated, overtime):
         def _cos_vec(a, b):
-            f = dot(a, b) / (linalg.norm(a) * linalg.norm(b))
+            f = dot(a, b) / max(array([linalg.norm(a) * linalg.norm(b), 1e-8]))
             return f
 
         if not validated:
@@ -351,8 +344,7 @@ if __name__ == '__main__':
         ave_w = 0
         r = 0
         step = 0
-        sed = random.randint(1, 10000)
-        env.set_state_seed(sed)
+        env.set_state_seed(i)
         for step in range(200):
             act = random.rand(7) * env.a_bound * 2 - env.a_bound
             act[0:4] /= linalg.norm(act[0:4])

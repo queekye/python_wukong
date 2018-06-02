@@ -3,7 +3,6 @@
 # Author: Flood Sung
 # Date: 2016.5.4
 # -----------------------------------
-
 import tensorflow as tf
 import numpy as np
 from ou_noise import OUNoise
@@ -15,7 +14,7 @@ from replay_buffer import ReplayBuffer
 
 REPLAY_BUFFER_SIZE = 1000000
 REPLAY_START_SIZE = 1000
-BATCH_SIZE = 32
+BATCH_SIZE = 128
 GAMMA = 0.99
 
 
@@ -29,7 +28,7 @@ class DDPG:
         self.action_dim = action_dim
 
         self.sess = tf.InteractiveSession()
-        # self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
+
         self.actor_network = ActorNetwork(self.sess,self.state_dim,self.action_dim)
         self.critic_network = CriticNetwork(self.sess,self.state_dim,self.action_dim)
         
@@ -38,8 +37,11 @@ class DDPG:
 
         # Initialize a random process the Ornstein-Uhlenbeck process for action exploration
         self.exploration_noise = OUNoise(self.action_dim)
+        
+        self.time_step = 1
 
     def train(self):
+        self.time_step = self.time_step + 1
         #print "train step",self.time_step
         # Sample a random minibatch of N transitions from replay buffer
         minibatch = self.replay_buffer.get_batch(BATCH_SIZE)
@@ -93,13 +95,17 @@ class DDPG:
         if self.replay_buffer.count() >  REPLAY_START_SIZE:
             self.train()
 
-        #if self.time_step % 10000 == 0:
-            #self.actor_network.save_network(self.time_step)
-            #self.critic_network.save_network(self.time_step)
+        if self.time_step % 100000 == 0:
+            self.actor_network.save_network(self.time_step)
+            self.critic_network.save_network(self.time_step)
 
         # Re-iniitialize the random process when an episode ends
         if done:
             self.exploration_noise.reset()
+
+    def load(self):
+        self.actor_network.load_network()
+        self.critic_network.load_network()
 
 
 

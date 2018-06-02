@@ -23,6 +23,7 @@ for i in range(10000):
         a_store = a.copy()
         ave_w += np.linalg.norm(a[-3:])
         a[:4] /= max(np.linalg.norm(a[:4]), 1e-8)
+        a[-3:] *= 2
         a = np.minimum(2, np.maximum(-2, a))
 
         s_, r, done = env.step(a)
@@ -36,5 +37,4 @@ for i in range(10000):
     ave_w /= j+1
     print("episode: %6d   ep_reward:%8.5f   last_reward:%6.5f   replay_num:%8d   "
           "cost_time:%4.2f    ave_w:%8.5f" % (i, ep_reward, r, replay_num, time.time() - t_start, ave_w))
-
 print('Running time: ', time.time() - t1)
