@@ -8,6 +8,7 @@ agent = DDPG(6, 7)
 
 t1 = time.time()
 replay_num = 0
+success = np.zeros(10000)
 for i in range(10000):
     t_start = time.time()
     sd = i * 3 + 100
@@ -33,8 +34,10 @@ for i in range(10000):
         ep_reward += r
 
         if done:
+            if r == 10:
+                success[i] = 1
             break
     ave_w /= j+1
-    print("episode: %6d   ep_reward:%8.5f   last_reward:%6.5f   replay_num:%8d   "
-          "cost_time:%4.2f    ave_w:%8.5f" % (i, ep_reward, r, replay_num, time.time() - t_start, ave_w))
+    print("episode: %6d   ep_reward:%8.5f   last_reward:%6.5f   replay_num:%8d   cost_time:%4.2f    ave_w:%8.5f    "
+          "success_rate:%4f" % (i, ep_reward, r, replay_num, time.time() - t_start, ave_w, sum(success)/(i+1)))
 print('Running time: ', time.time() - t1)

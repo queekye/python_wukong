@@ -106,8 +106,8 @@ def dynamic(state, v0=zeros(8)):
     Teq = cross(w, I_star.dot(w) + U.dot(J_wheel).dot(w_wheel))
     for j in range(0, 8):
         if vertex_high[j] < 0:
-            if v0[j] < 0.1:
-                v0[j] = 0.1
+            if v0[j] < 0.001:
+                v0[j] = 0.001
 
             r_one = vertex_b[:, j]
             high = vertex_high[j]
@@ -303,7 +303,7 @@ class Env:
             return f
 
         if not validated:
-            reward_value = -3
+            reward_value = -5
         elif successed:
             reward_value = 10
         elif over_map:

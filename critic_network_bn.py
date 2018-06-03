@@ -144,4 +144,5 @@ class CriticNetwork:
 
     def save_network(self, time_step):
         print("save critic-network...", time_step)
+        self.saver = tf.train.Saver()
         self.saver.save(self.sess, 'saved_critic_networks/' + 'critic-network', global_step=time_step)
