@@ -126,7 +126,7 @@ t1 = time.time()
 replay_num = 0
 for i in range(MAX_EPISODES):
     t_start = time.time()
-    sd = i * 3 + 100
+    sd = i
     s = env.set_state_seed(sd)
     exploration_noise.reset()
     ep_reward = 0

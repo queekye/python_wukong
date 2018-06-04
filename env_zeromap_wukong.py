@@ -11,7 +11,7 @@ from numpy import *
 
 # 地图参数
 MAP_DIM = 64
-PIXEL_METER = 16
+PIXEL_METER = 32
 
 # 小行星与探测器的相关参数
 M_wheel_max = 0.01
@@ -37,7 +37,7 @@ vertex_b = array([[lx, lx, lx, lx, -lx, -lx, -lx, -lx],
                   [-ly, -ly, ly, ly, -ly, -ly, ly, ly],
                   [-lz, lz, lz, -lz, -lz, lz, lz, -lz]])
 MIN_ENERGY = 0.001
-MAX_VXY = 1.5
+MAX_VXY = 1
 MAX_VZ = 0.3
 # RK4算法参数
 STEP_LENGTH = 0.001
@@ -106,8 +106,9 @@ def dynamic(state, v0=zeros(8)):
     Teq = cross(w, I_star.dot(w) + U.dot(J_wheel).dot(w_wheel))
     for j in range(0, 8):
         if vertex_high[j] < 0:
-            if v0[j] < 0.001:
-                v0[j] = 0.001
+            if v0[j] <= 0:
+                print("small v")
+                continue
 
             r_one = vertex_b[:, j]
             high = vertex_high[j]
@@ -160,7 +161,7 @@ def RK4(t, state, step_length=STEP_LENGTH, v0=zeros(8)):
     t += h
     if state[3:13].dot(state[3:13]) >= 10000:
         print("Invalid State!")
-    return t, state, v0
+    return t, state, v4.copy()
 
 
 # check:OK
@@ -188,12 +189,12 @@ class Env:
         self.r_obj /= 2
 
     # check:
-    # 设定初始状态，即探测器与地面的撞前状态
+    # 设定初始状态，即探测器最高点状态
     # 暂时不设定难度，（根据初始xy坐标与原点（目标）的距离，分10个难度，默认为最高难度）
     def set_state_seed(self, sd=1):
         random.seed(sd)
         minXY = 3 * PIXEL_METER
-        maxXY = MAP_DIM * PIXEL_METER / 2 - 4 * PIXEL_METER
+        maxXY = MAP_DIM * PIXEL_METER * 3 / 8
         minVxy = 0.05
         maxVxy = 0.2
         XY_theta = random.random() * 2 * pi
@@ -208,18 +209,16 @@ class Env:
 
         DCM = q_to_DCM(q)
         s_dot = dot(DCM.T, vertex_b)
+        minZ = 2
+        maxZ = 10
         zf = -min(s_dot[2, :])
+        # (maxZ - minZ) * random.random() + minZ
 
         self.state = concatenate([XY, array([zf]), v_xy, array([vz]), q, w, w_wheel])
         self.t = 0
         self.state0 = self.state.copy()
         return self.observe_state()
 
-    # check:
-    # step env接收agent的action后的状态转移
-    # 输入action即碰前角速度与姿态，输出新的state，reward以及标志该次仿真是否达到目的地的done，是否速度过小导致停止的stop
-    # 先按假想的无控进行仿真，若探测器在空中时间小于MIN_FLY_TIME,按无控进行仿真
-    # ?探测器在空中角动量守恒，应该可以计算出与action对应的飞轮转速？
     def step(self, action):
         overtime = False
         pre_t = self.t
@@ -235,12 +234,12 @@ class Env:
             if loss_energy > 0:
                 print("energy improved", loss_energy)
             if not overtime:
-                t_fly = -self.state[5] / g[2]
+                t_fly = -2 * self.state[5] / g[2]
                 self.state[0:2] += self.state[3:5] * t_fly
                 self.state[5] = -self.state[5]
 
         stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[3:5]) < 1e-2 or abs(self.state[5]) < 1e-2
-        over_map = linalg.norm(self.state[0:2]) > (MAP_DIM * PIXEL_METER)
+        over_map = linalg.norm(self.state[0:2]) > (MAP_DIM * PIXEL_METER / 2)
         over_speed = linalg.norm(self.state[3:5]) > MAX_VXY or linalg.norm(self.state[5]) > MAX_VZ
         successed = linalg.norm(self.state[0:2]) < self.r_obj
         reward_value = self.reward(successed, stop_bool, pre_state, pre_t, over_speed, over_map, validated, overtime)
@@ -251,10 +250,6 @@ class Env:
         o_s = self.state[0:6].copy()
         o_s[0:2] /= (MAP_DIM * PIXEL_METER / 2)
         return o_s
-
-    # check:
-    # 碰撞仿真，直至所有顶点均与地面脱离
-    # 更新t,state
 
     def validate(self, action):
         q, w = action[0:4].copy(), action[4:7].copy()
@@ -272,7 +267,7 @@ class Env:
         t0 = self.t
         t_max = 20
         while (self.state[2] <= 0.2 * sqrt(3) or self.state[5] <= 0) and self.t - t0 < t_max:
-            self.t, self.state, v0 = RK4(self.t, self.state, STEP_LENGTH*10, v0)
+            self.t, self.state, v0 = RK4(self.t, self.state, STEP_LENGTH * 10, v0)
         overtime = self.t - t0 >= t_max
         return overtime
 
@@ -303,7 +298,7 @@ class Env:
             return f
 
         if not validated:
-            reward_value = -5
+            reward_value = -3
         elif successed:
             reward_value = 10
         elif over_map:
@@ -317,9 +312,9 @@ class Env:
             d = (linalg.norm(pre_state[0:2]) - linalg.norm(self.state[0:2])) / \
                 max(linalg.norm(pre_state[0:2]), linalg.norm(self.state[0:2]))
             c_pre = _cos_vec(-pre_state[0:2], pre_state[3:5])
-            c = _cos_vec(-self.state[0:2], self.state[3:5])
+            c = _cos_vec(-pre_state[0:2], self.state[3:5])
             v_xy = linalg.norm(self.state[3:5])
-            reward_value = (c - c_pre) + (v_xy * c - v_xy * sqrt(1 - c ** 2)) + d - 0.0001 * (self.t - pre_t)
+            reward_value = (c - c_pre) + (v_xy * c - v_xy * sqrt(1 - c ** 2)) + d  # - 0.0001 * (self.t - pre_t)
         return reward_value
 
     def energy(self):
@@ -330,15 +325,6 @@ class Env:
 
 if __name__ == '__main__':
     env = Env()
-    env.state = array([3.33423611e+02, -1.65905041e+02, 2.84824947e-01, 5.00737136e-03, -7.17127150e-02,
-                       -2.13685715e-01, 3.92365544e-01, -5.85075828e-02, 9.17433879e-01, 3.06793251e-02,
-                       1.21038266e-01, 7.79311340e-01, -1.38269211e+00, -5.84824898e-01, 7.97754177e-01,
-                       9.71948397e-03])
-    vertex_s, vertex_high, vertex_v = vertex(env.state)
-    v00 = -vertex_v[2, :]
-    v00 = env.collisionSim(v00)
-    print(v00)
-    print(env.state)
     for i in range(100):
         ep_reward = 0
         ave_w = 0
