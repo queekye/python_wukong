@@ -4,12 +4,13 @@ import time
 import numpy as np
 
 env = Env()
-agent = DDPG(6, 7)
+agent = DDPG(5, 7)
 
 t1 = time.time()
 replay_num = 0
-success = np.zeros(10000)
-for i in range(10000):
+zheng_reward = 0.
+success = np.zeros(100000)
+for i in range(100000):
     t_start = time.time()
     sd = i * 3 + 100
     s = env.set_state_seed(sd)
@@ -30,6 +31,8 @@ for i in range(10000):
         s_, r, done = env.step(a)
         agent.perceive(s, a_store, r, s_, done)
         replay_num += 1
+        if r > 0:
+            zheng_reward += 1
         s = s_
         ep_reward += r
 
@@ -39,5 +42,6 @@ for i in range(10000):
             break
     ave_w /= j+1
     print("episode: %6d   ep_reward:%8.5f   last_reward:%6.5f   replay_num:%8d   cost_time:%4.2f    ave_w:%8.5f    "
-          "success_rate:%4f" % (i, ep_reward, r, replay_num, time.time() - t_start, ave_w, sum(success)/(i+1)))
+          "success_rate:%4f    正reward比例：%4f" % (i, ep_reward, r, replay_num, time.time() - t_start, ave_w,
+                                                 sum(success)/(i+1), zheng_reward/replay_num))
 print('Running time: ', time.time() - t1)

@@ -6,15 +6,15 @@
 import tensorflow as tf
 import numpy as np
 from ou_noise import OUNoise
-from critic_network_bn import CriticNetwork
+from critic_network import CriticNetwork 
 from actor_network_bn import ActorNetwork
 from replay_buffer import ReplayBuffer
 
 # Hyper Parameters:
 
-REPLAY_BUFFER_SIZE = 100000
+REPLAY_BUFFER_SIZE = 1000000
 REPLAY_START_SIZE = 1000
-BATCH_SIZE = 32
+BATCH_SIZE = 128
 GAMMA = 0.99
 
 

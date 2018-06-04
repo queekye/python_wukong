@@ -37,7 +37,7 @@ vertex_b = array([[lx, lx, lx, lx, -lx, -lx, -lx, -lx],
                   [-ly, -ly, ly, ly, -ly, -ly, ly, ly],
                   [-lz, lz, lz, -lz, -lz, lz, lz, -lz]])
 MIN_ENERGY = 0.001
-MAX_VXY = 1
+MAX_VXY = 1.5
 MAX_VZ = 0.3
 # RK4算法参数
 STEP_LENGTH = 0.001
@@ -106,9 +106,9 @@ def dynamic(state, v0=zeros(8)):
     Teq = cross(w, I_star.dot(w) + U.dot(J_wheel).dot(w_wheel))
     for j in range(0, 8):
         if vertex_high[j] < 0:
-            if v0[j] <= 0:
-                print("small v")
-                continue
+            if v0[j] < 0.1:
+                # print("small v")
+                v0[j] = 0.1
 
             r_one = vertex_b[:, j]
             high = vertex_high[j]
@@ -201,7 +201,7 @@ class Env:
         XY = ((maxXY - minXY) * random.random() + minXY) * array([cos(XY_theta), sin(XY_theta)])
         v_theta = random.random() * 2 * pi
         v_xy = ((maxVxy - minVxy) * random.random() + minVxy) * array([cos(v_theta), sin(v_theta)])
-        vz = -0.07 * random.random() - 0.03
+        vz = 0  # -0.07 * random.random() - 0.03
         q = random.rand(4)
         q /= max(array([sqrt(q.dot(q)), 1e-8]))
         w = random.rand(3) * 2 - 1
@@ -211,8 +211,8 @@ class Env:
         s_dot = dot(DCM.T, vertex_b)
         minZ = 2
         maxZ = 10
-        zf = -min(s_dot[2, :])
-        # (maxZ - minZ) * random.random() + minZ
+        # zf = -min(s_dot[2, :])
+        zf = (maxZ - minZ) * random.random() + minZ
 
         self.state = concatenate([XY, array([zf]), v_xy, array([vz]), q, w, w_wheel])
         self.t = 0
@@ -223,10 +223,10 @@ class Env:
         overtime = False
         pre_t = self.t
         pre_state = self.state.copy()
-
+        v0 = self.relocation(action)
         validated = self.validate(action)
+        successed, stop_bool, over_speed, over_map = False, False, False, False
         if validated:
-            v0 = self.relocation(action)
             pre_energy = self.energy()
             overtime = self.collisionSim(v0)
             after_energy = self.energy()
@@ -234,21 +234,26 @@ class Env:
             if loss_energy > 0:
                 print("energy improved", loss_energy)
             if not overtime:
-                t_fly = -2 * self.state[5] / g[2]
+                t_fly = abs(self.state[5] / g[2])
                 self.state[0:2] += self.state[3:5] * t_fly
-                self.state[5] = -self.state[5]
+                self.state[2] += 0.5*abs(g[2])*t_fly**2
+                self.state[5] = 0
+                XY_luo = self.state[0:2] + self.state[3:5] * t_fly
+                stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[3:5]) < 1e-2 or abs(
+                    g[2]*t_fly) < 1e-2
+                over_map = linalg.norm(XY_luo) > (MAP_DIM * PIXEL_METER / 2)
+                over_speed = linalg.norm(self.state[3:5]) > MAX_VXY or self.state[2] > 20
+                successed = linalg.norm(self.state[0:2]) < self.r_obj
 
-        stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[3:5]) < 1e-2 or abs(self.state[5]) < 1e-2
-        over_map = linalg.norm(self.state[0:2]) > (MAP_DIM * PIXEL_METER / 2)
-        over_speed = linalg.norm(self.state[3:5]) > MAX_VXY or linalg.norm(self.state[5]) > MAX_VZ
-        successed = linalg.norm(self.state[0:2]) < self.r_obj
         reward_value = self.reward(successed, stop_bool, pre_state, pre_t, over_speed, over_map, validated, overtime)
         done = successed or stop_bool or over_map or over_speed or overtime or (not validated)
         return self.observe_state(), reward_value, done
 
     def observe_state(self):
-        o_s = self.state[0:6].copy()
-        o_s[0:2] /= (MAP_DIM * PIXEL_METER / 2)
+        o_s = self.state[0:5].copy()
+        o_s[0:2] /= 100
+        o_s[2] /= 5
+        o_s[3:5] /= 0.1
         return o_s
 
     def validate(self, action):
@@ -272,12 +277,6 @@ class Env:
         return overtime
 
     def relocation(self, action):
-        t_d1 = abs(self.state[5] / g[2])
-        self.t -= t_d1
-        self.state[2] += abs(0.5 * g[2] * t_d1 ** 2)
-        self.state[0:2] -= t_d1 * self.state[3:5]
-        self.state[5] = 0
-
         qf, wf = action[0:4].copy(), action[4:7].copy()
         zf = -min(dot(q_to_DCM(qf).T, vertex_b)[2, :])
         t_d2 = sqrt(2 * (zf - self.state[2]) / g[2])
@@ -301,18 +300,18 @@ class Env:
             reward_value = -3
         elif successed:
             reward_value = 10
-        elif over_map:
+        elif over_speed:
             reward_value = -2.5
+        elif over_map:
+            reward_value = -2
         elif stop_bool or overtime:
             reward_value = (linalg.norm(self.state0[0:2]) - linalg.norm(self.state[0:2])) / \
                            max(linalg.norm(self.state0[0:2]), linalg.norm(self.state[0:2]))
-        elif over_speed:
-            reward_value = -2
         else:
             d = (linalg.norm(pre_state[0:2]) - linalg.norm(self.state[0:2])) / \
                 max(linalg.norm(pre_state[0:2]), linalg.norm(self.state[0:2]))
             c_pre = _cos_vec(-pre_state[0:2], pre_state[3:5])
-            c = _cos_vec(-pre_state[0:2], self.state[3:5])
+            c = _cos_vec(-self.state[0:2], self.state[3:5])
             v_xy = linalg.norm(self.state[3:5])
             reward_value = (c - c_pre) + (v_xy * c - v_xy * sqrt(1 - c ** 2)) + d  # - 0.0001 * (self.t - pre_t)
         return reward_value

@@ -14,7 +14,6 @@ gym 0.8.0
 import tensorflow as tf
 import numpy as np
 import time
-from env_zeromap_wukong import Env
 from ou_noise import OUNoise
 
 
@@ -35,12 +34,12 @@ BATCH_SIZE = 32
 
 
 class DDPG(object):
-    def __init__(self, a_dim, s_dim, a_bound,):
-        self.memory = np.zeros((MEMORY_CAPACITY, s_dim * 2 + a_dim.sum() + 1), dtype=np.float32)
+    def __init__(self, a_dim, s_dim,):
+        self.memory = np.zeros((MEMORY_CAPACITY, s_dim * 2 + a_dim + 1), dtype=np.float32)
         self.pointer = 0
         self.sess = tf.Session()
 
-        self.a_dim, self.s_dim, self.a_bound = a_dim, s_dim, a_bound,
+        self.a_dim, self.s_dim = a_dim, s_dim
         self.S = tf.placeholder(tf.float32, [None, s_dim], 's')
         self.S_ = tf.placeholder(tf.float32, [None, s_dim], 's_')
         self.R = tf.placeholder(tf.float32, [None, 1], 'r')
@@ -93,18 +92,15 @@ class DDPG(object):
         with tf.variable_scope('Actor', reuse=reuse, custom_getter=custom_getter):
             layer_1 = tf.layers.dense(s, 400, activation=tf.nn.relu, name='l1', trainable=trainable)
             layer_2 = tf.layers.dense(layer_1, 300, activation=tf.nn.relu, name='l2', trainable=trainable)
-            a1 = tf.layers.dense(layer_2, self.a_dim[0], activation=tf.nn.tanh, name='a1', trainable=trainable)
-            a1_norm = tf.nn.l2_normalize(a1, dim=-1)
-            a2 = tf.layers.dense(layer_2, self.a_dim[1], activation=tf.nn.tanh, name='a2', trainable=trainable)
-            a = tf.concat([a1_norm, a2], axis=-1)
-            return tf.multiply(a, self.a_bound, name='scaled_a')
+            a = tf.layers.dense(layer_2, self.a_dim, activation=tf.nn.tanh, name='a1', trainable=trainable)
+            return a
 
     def _build_c(self, s, a, reuse=None, custom_getter=None):
         trainable = True if reuse is None else False
         with tf.variable_scope('Critic', reuse=reuse, custom_getter=custom_getter):
             n_l1 = 400
             w1_s = tf.get_variable('w1_s', [self.s_dim, n_l1], trainable=trainable)
-            w1_a = tf.get_variable('w1_a', [self.a_dim.sum(), n_l1], trainable=trainable)
+            w1_a = tf.get_variable('w1_a', [self.a_dim, n_l1], trainable=trainable)
             b1 = tf.get_variable('b1', [1, n_l1], trainable=trainable)
             layer_1 = tf.nn.relu(tf.matmul(s, w1_s) + tf.matmul(a, w1_a) + b1)
             layer_2 = tf.layers.dense(layer_1, 300, activation=tf.nn.relu, name='l2', trainable=trainable)
@@ -112,48 +108,3 @@ class DDPG(object):
 
 
 ###############################  training  ####################################
-
-
-env = Env()
-
-s_dim = env.s_dim
-a_dim = env.a_dim
-a_bound = env.a_bound
-
-ddpg = DDPG(a_dim, s_dim, a_bound)
-exploration_noise = OUNoise(a_dim.sum())  # control exploration
-t1 = time.time()
-replay_num = 0
-for i in range(MAX_EPISODES):
-    t_start = time.time()
-    sd = i
-    s = env.set_state_seed(sd)
-    exploration_noise.reset()
-    ep_reward = 0
-    ave_w = 0
-    j = 0
-    r = 0
-    for j in range(MAX_EP_STEPS):
-        # Add exploration noise
-        a = ddpg.choose_action(s)
-        ave_w += np.linalg.norm(a[-a_dim[1]:])
-        a += exploration_noise.noise()  # add randomness to action selection for exploration
-        a[:a_dim[0]] /= max(np.linalg.norm(a[:a_dim[0]]), 1e-8)
-        a = np.minimum(a_bound, np.maximum(-a_bound, a))
-
-        s_, r, done= env.step(a)
-        ddpg.store_transition(s, a, r, s_)
-        replay_num += 1
-        if ddpg.pointer > REPLAY_START:
-            ddpg.learn()
-
-        s = s_
-        ep_reward += r
-
-        if done:
-            break
-    ave_w /= j+1
-    print("episode: %10d   ep_reward:%10.5f   last_reward:%10.5f   replay_num:%10d   "
-          "cost_time:%10.2f    ave_w:" % (i, ep_reward, r, replay_num, time.time() - t_start), ave_w)
-
-print('Running time: ', time.time() - t1)
